@@ -23,12 +23,20 @@ RED = (255, 0, 0)
 GREEN = (0, 255, 0)
 YELLOW = (255, 255, 0)
 BLUE = (0, 0, 255)
+PURPLE = (128, 0, 128)
 
 # Game settings
 DIFFICULTY_SPEEDS = {
     'Easy': 8,
     'Medium': 12,
     'Hard': 16
+}
+
+# Power-up types
+POWER_UP_TYPES = {
+    'speed': {'color': BLUE, 'duration': 5000},  # 5 seconds
+    'invincible': {'color': YELLOW, 'duration': 3000},  # 3 seconds
+    'double_points': {'color': PURPLE, 'duration': 7000}  # 7 seconds
 }
 
 # Load or create high scores
@@ -47,6 +55,47 @@ def save_high_score(difficulty, score):
         return True
     return False
 
+class PowerUp:
+    def __init__(self):
+        self.active = False
+        self.position = (0, 0)
+        self.type = None
+        self.spawn_time = 0
+        self.duration = 0
+
+    def spawn(self, snake_positions):
+        self.type = random.choice(list(POWER_UP_TYPES.keys()))
+        self.position = (random.randint(0, GRID_WIDTH-1), random.randint(0, GRID_HEIGHT-1))
+        while self.position in snake_positions:
+            self.position = (random.randint(0, GRID_WIDTH-1), random.randint(0, GRID_HEIGHT-1))
+        self.active = True
+        self.spawn_time = pygame.time.get_ticks()
+        self.duration = POWER_UP_TYPES[self.type]['duration']
+
+    def render(self, surface):
+        if self.active and self.type is not None:
+            pygame.draw.rect(surface, POWER_UP_TYPES[self.type]['color'],
+                           (self.position[0] * GRID_SIZE, self.position[1] * GRID_SIZE, GRID_SIZE, GRID_SIZE))
+
+class Obstacle:
+    def __init__(self):
+        self.positions = []
+        self.color = WHITE
+
+    def generate(self, snake_positions):
+        self.positions = []
+        num_obstacles = random.randint(3, 7)
+        for _ in range(num_obstacles):
+            pos = (random.randint(0, GRID_WIDTH-1), random.randint(0, GRID_HEIGHT-1))
+            while pos in snake_positions or pos in self.positions:
+                pos = (random.randint(0, GRID_WIDTH-1), random.randint(0, GRID_HEIGHT-1))
+            self.positions.append(pos)
+
+    def render(self, surface):
+        for pos in self.positions:
+            pygame.draw.rect(surface, self.color,
+                           (pos[0] * GRID_SIZE, pos[1] * GRID_SIZE, GRID_SIZE, GRID_SIZE))
+
 class Snake:
     def __init__(self, difficulty='Medium'):
         self.length = 1
@@ -57,6 +106,10 @@ class Snake:
         self.difficulty = difficulty
         self.paused = False
         self.game_over = False
+        self.power_ups = {}
+        self.invincible = False
+        self.speed_multiplier = 1
+        self.point_multiplier = 1
         
         # Load sound effects
         self.eat_sound = mixer.Sound('eat.wav')
@@ -65,16 +118,51 @@ class Snake:
     def get_head_position(self):
         return self.positions[0]
 
-    def update(self):
+    def update(self, obstacles):
         cur = self.get_head_position()
         x, y = self.direction
         new = ((cur[0] + x) % GRID_WIDTH, (cur[1] + y) % GRID_HEIGHT)
-        if new in self.positions[3:]:
+
+        # Check collision with obstacles
+        if not self.invincible and new in obstacles.positions:
             return False
+
+        # Check collision with self
+        if not self.invincible and new in self.positions[3:]:
+            return False
+
         self.positions.insert(0, new)
         if len(self.positions) > self.length:
             self.positions.pop()
+
+        # Update power-ups
+        current_time = pygame.time.get_ticks()
+        for power_up_type in list(self.power_ups.keys()):
+            if current_time - self.power_ups[power_up_type] >= POWER_UP_TYPES[power_up_type]['duration']:
+                self._remove_power_up(power_up_type)
+
         return True
+
+    def apply_power_up(self, power_up_type):
+        self.power_ups[power_up_type] = pygame.time.get_ticks()
+        if power_up_type == 'speed':
+            self.speed_multiplier = 1.5
+        elif power_up_type == 'invincible':
+            self.invincible = True
+            self.color = YELLOW
+        elif power_up_type == 'double_points':
+            self.point_multiplier = 2
+
+    def _remove_power_up(self, power_up_type):
+        if power_up_type in self.power_ups:
+            del self.power_ups[power_up_type]
+            if power_up_type == 'speed':
+                self.speed_multiplier = 1
+            elif power_up_type == 'invincible':
+                self.invincible = False
+                self.color = GREEN
+            elif power_up_type == 'double_points':
+                self.point_multiplier = 1
 
     def reset(self):
         self.length = 1
@@ -84,6 +172,10 @@ class Snake:
         self.difficulty = self.difficulty
         self.paused = False
         self.game_over = False
+        self.power_ups = {}
+        self.invincible = False
+        self.speed_multiplier = 1
+        self.point_multiplier = 1
         
         # Load sound effects
         self.eat_sound = mixer.Sound('eat.wav')
@@ -161,6 +253,12 @@ def main():
     
     snake = Snake(selected_difficulty)
     food = Food()
+    power_up = PowerUp()
+    obstacles = Obstacle()
+    obstacles.generate(snake.positions)
+    
+    last_power_up_time = pygame.time.get_ticks()
+    power_up_interval = 10000  # 10 seconds
     
     while True:
         for event in pygame.event.get():
@@ -176,6 +274,8 @@ def main():
                     snake.direction = (-1, 0)
                 elif event.key == pygame.K_RIGHT and snake.direction != (-1, 0):
                     snake.direction = (1, 0)
+                elif event.key == pygame.K_p:
+                    snake.paused = not snake.paused
         
         if snake.paused:
             font = pygame.font.Font(None, 74)
@@ -184,7 +284,7 @@ def main():
             pygame.display.update()
             continue
             
-        if not snake.update():
+        if not snake.update(obstacles):
             snake.crash_sound.play()
             snake.game_over = True
             font = pygame.font.Font(None, 74)
@@ -199,25 +299,46 @@ def main():
             pygame.time.wait(2000)
             snake.reset()
             food.randomize_position(snake.positions)
+            obstacles.generate(snake.positions)
             continue
+
+        # Handle power-up spawning
+        current_time = pygame.time.get_ticks()
+        if not power_up.active and current_time - last_power_up_time >= power_up_interval:
+            power_up.spawn(snake.positions)
+            last_power_up_time = current_time
+
+        # Check for power-up collection
+        if power_up.active and snake.get_head_position() == power_up.position:
+            snake.apply_power_up(power_up.type)
+            power_up.active = False
 
         if snake.get_head_position() == food.position:
             snake.eat_sound.play()
             snake.length += 1
-            snake.score += 1
+            snake.score += 1 * snake.point_multiplier
             food.randomize_position(snake.positions)
 
         screen.fill(BLACK)
         snake.render(screen)
         food.render(screen)
+        obstacles.render(screen)
+        if power_up.active:
+            power_up.render(screen)
         
-        # Display score
+        # Display score and active power-ups
         font = pygame.font.Font(None, 36)
         score_text = font.render(f'Score: {snake.score}', True, WHITE)
         screen.blit(score_text, (10, 10))
         
+        y = 50
+        for power_up_type in snake.power_ups:
+            power_up_text = font.render(f'{power_up_type.title()} active!', True, POWER_UP_TYPES[power_up_type]['color'])
+            screen.blit(power_up_text, (10, y))
+            y += 30
+        
         pygame.display.update()
-        clock.tick(DIFFICULTY_SPEEDS[snake.difficulty])
+        clock.tick(DIFFICULTY_SPEEDS[snake.difficulty] * snake.speed_multiplier)
 
 if __name__ == '__main__':
     main()
